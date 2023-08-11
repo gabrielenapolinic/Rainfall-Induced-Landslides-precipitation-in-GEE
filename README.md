@@ -1,4 +1,4 @@
-The SU ID (and corresponding counter) of the SU where one or more specific landslides are present, as well as the amount of precipitation (min, man, mean, and StDev) for one or more landslides and for a given date, can all be retrieved using the script that follows:
+SU ID(s) (with corresponding counter) of SUs where one or more landslides are placed, as well as the amount of precipitation (min, man, mean, and StDev) for one or more landslides and for a given date, can all be retrieved using the script that follows:
 
 //////////////////////////////////////////////////////////////////////////////////////////
 /*
