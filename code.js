@@ -24,232 +24,129 @@ massimiliano.alvioli[AT]irpi.cnr.it
 
 */
 
-// Load the points FeatureCollection
-var points = ee.FeatureCollection('projects/ee-gabrielenicolanapoli/assets/Marche_Lasli/ITALICA_Marche_with_dates');
-Map.centerObject(points, 9);
+// Load the FeatureCollection with predictor polygons
+var predictors_polygons = ee.FeatureCollection('projects/stgee-dataset/assets/polygons_gridcoll_14-11-2024');
 
-// Load the secondary collection: Polygons (SlUnit)
-var polygons = ee.FeatureCollection('projects/ee-gabrielenicolanapoli/assets/Marche_Lasli/SU_RegMarche');
-Map.addLayer(polygons, { palette: '#ed7000' }, 'polygons');
+// Load the FeatureCollection with landslide points
+var landPoints = ee.FeatureCollection('projects/stgee-dataset/assets/pointsDate');
 
-// Define a spatial filter to find geometries that intersect.
-var spatialFilter = ee.Filter.intersects({
-  leftField: '.geo',
-  rightField: '.geo',
-  maxError: 10
-});
+// Function to clean up the index (reset system:index)
+function cleanupIndex(featureCollection) {
+  var featureCollection = ee.FeatureCollection(featureCollection);
+  var idList = ee.List.sequence(0, featureCollection.size().subtract(1));
+  var list = featureCollection.toList(featureCollection.size());
 
-// Perform the spatial join and save all overlapping polygons as a list for each point
-var intersectJoined = ee.Join.saveAll({
-  matchesKey: 'points',
-}).apply({
-  primary: points,
-  secondary: polygons,
-  condition: spatialFilter,
-});
+  var outFeatureCollection = idList.map(function (newSysIndex) {
+    var feat = ee.Feature(list.get(newSysIndex));
+    var indexString = ee.String('').cat(ee.Number(newSysIndex).format("%d"));
+    return feat.set("system:index", indexString);
+  });
 
-//////////////////////////////////////////////////////////////////////////////////////////
-// Monthly time series rainfall
-
-// Load the precipitation ImageCollection
-var precipitation = ee.ImageCollection('UCSB-CHG/CHIRPS/DAILY')
-  .filterDate('2002-07-16', '2018-05-03')
-  .filterBounds(points.geometry());
-
-// Define a function to combine date and time information
-function combineDateAndTime(image) {
-  var index = ee.String(image.get('system:index'));
-  var year = ee.Number.parse(index.slice(0, 4));
-  var month = ee.Number.parse(index.slice(4, 6));
-  var day = ee.Number.parse(index.slice(6, 8));
-  var date = ee.Date.fromYMD(year, month, day);
-
-  var timeStart = ee.Number(image.get('system:time_start'));
-  var hours = ee.Number(timeStart.divide(100000000000).int());
-  var minutes = ee.Number(timeStart.divide(1000000000).mod(100).int());
-
-  // Convert the date and time to Rome timezone (UTC+2)
-  var dateInRome = date.advance(2, 'hour');
-
-  // Create a formatted string for the date and time
-  var formattedDate = ee.String(dateInRome.format('yyyy-MM-dd')).cat(' ')
-    .cat(ee.Number(hours).format('%02d')).cat(':')
-    .cat(ee.Number(minutes).format('%02d')).cat(':00');
-
-  return image.set('formatted_date', formattedDate);
+  return ee.FeatureCollection(outFeatureCollection);
 }
 
-// Apply the combined function to each image in the collection
-var collectionWithFormattedDate = precipitation.map(combineDateAndTime);
+// Clean up the index for both collections
+var newLandPoints = cleanupIndex(landPoints);
+var newPredictorsPolygons = cleanupIndex(predictors_polygons);
 
-// Define a function to get the precipitation value for each image
-var precipitationValues = collectionWithFormattedDate.map(function(image) {
-  var value = ee.Image(image).reduceRegion({
-    reducer: ee.Reducer.mean(),
-    geometry: points.geometry(),
-    scale: 5000
-  }).get('precipitation');
-  return image.set('precipitation', value);
+// Variables for date and feature ID fields
+var dateField = 'formatted_date';
+var fidField = 'id';
+
+// Identify overlapping points between polygons and landslide points
+var overlappingPoints = newLandPoints.filterBounds(newPredictorsPolygons);
+
+// Function to process polygons by adding fields from overlapping points
+var updatedPolygons = newPredictorsPolygons.map(function (polygon) {
+  // Filter points that fall within the current polygon
+  var matchedPoints = overlappingPoints.filterBounds(polygon.geometry());
+
+  // Aggregate the first occurrence of the date and ID fields from matched points
+  var formattedDate = matchedPoints.aggregate_first(dateField);
+  var id = matchedPoints.aggregate_first(fidField);
+
+  // Determine presence/absence (P/A) based on matching points
+  var presenceAbsence = ee.Algorithms.If(
+    matchedPoints.size().gt(0),
+    1, // 1 if there are points
+    0  // 0 otherwise
+  );
+
+  // Set the new fields in the polygon
+  return polygon
+    .set(dateField, formattedDate)
+    .set(fidField, id)
+    .set('P/A', presenceAbsence);
 });
 
-// Print the first image with the new properties
-print(precipitationValues.limit(50), 'precipitationValues');
+// Load the GPM GSMaP ImageCollection for rainfall data
+var gpmGSMaP = ee.ImageCollection('JAXA/GPM_L3/GSMaP/v8/operational');
 
-// Define visualization parameters for rainfall
-var rainfallVis = {
-  min: 1.0,
-  max: 17.0,
-  palette: ['0300ff', '418504', 'efff07', 'efff07', 'ff0303']
-};
+// Function to add cumulative rainfall
+function addCumulativeRainfall(feature, days) {
+  var date = ee.Date(feature.get(dateField));
 
-// Map.addLayer(precipitationValues, rainfallVis, 'precipitationValues');
+  // Check if the date field exists
+  var hasValidDate = feature.get(dateField);
 
-//////////////////////////////////////////////////////////////////////////////////////////
-// Convert 'utc_date' to date format with Rome Timezone
+  return ee.Algorithms.If(
+    hasValidDate, // Verify the date field is not null
+    (function () {
+      var startDate = date.advance(-days, 'day');
+      var gpmImages = gpmGSMaP.filterDate(startDate, date).select('hourlyPrecipRateGC');
 
-var convertToDate = function(feature) {
-  var dateString = ee.String(feature.get('utc_date'));
-  
-  // Extract the date from the 'utc_date' string
-  var datePart = dateString.slice(0, 10);
-  
-  // Extract the hours (HH) and minutes (mm) from the 'utc_date' string
-  var hours = dateString.slice(11, 13);
-  var minutes = dateString.slice(14, 16);
-  
-  // Check if seconds are present in the string
-  var hasSeconds = dateString.length() >= 19;
-  
-  // Add seconds if present, otherwise set them to '00'
-  var seconds = hasSeconds ? dateString.slice(17, 19) : '00';
-  
-  // Create a new string with the hours, minutes, and seconds
-  var timeString = ee.String(hours).cat(':').cat(minutes).cat(':').cat(seconds);
-  
-  // Combine the date and time parts
-  var formattedDateString = ee.String(datePart).cat(' ').cat(timeString);
-  
-  // Convert the new string to an ee.Date object
-  var date = ee.Date.parse('dd/MM/yyyy HH:mm:ss', formattedDateString);
+      // Compute sum and standard deviation of rainfall
+      var gpmSumImage = gpmImages.sum();
+      var rainfallMean = gpmSumImage.reduceRegion({
+        reducer: ee.Reducer.mean(),
+        geometry: feature.geometry(),
+        scale: 1000,
+        maxPixels: 5e12
+      }).get('hourlyPrecipRateGC');
 
-  // // Add the 2-hour offset for Rome timezone
-  // var dateWithOffset = date.advance(2, 'hour');
-  
-  return feature.set('date', date);
-};
+      var rainfallStdDev = gpmImages.reduce(ee.Reducer.stdDev()).reduceRegion({
+        reducer: ee.Reducer.mean(),
+        geometry: feature.geometry(),
+        scale: 1000,
+        maxPixels: 5e12
+      }).get('hourlyPrecipRateGC_stdDev');
 
-// Apply the function to each feature in the FeatureCollection
-var pointsWithDate = points.map(convertToDate);
+      return feature
+        .set('CumRn_' + days + 'd_mean', rainfallMean)
+        .set('CumRn_' + days + 'd_std', rainfallStdDev);
+    })(),
+    feature
+      .set('CumRn_' + days + 'd_mean', 0) // Set null values if date is missing
+      .set('CumRn_' + days + 'd_std', 0)
+  );
+}
 
-print(pointsWithDate.first(), 'pointsWithDate');
-
-// Visualize the FeatureCollection on the map
-Map.addLayer(pointsWithDate, { color: 'FF0000' }, 'suWithDate');
-
-//////////////////////////////////////////////////////////////////////////////////////////
-// Filter features based on CHIRPS dates
-
-// Filter the Feature Collection based on the landslide date
-var landslideDate = ee.Date("date");
-var landslideFeatures = pointsWithDate.filterDate(landslideDate, landslideDate.advance(1, 'day'));
-
-// Load the CHIRPS dataset as an ImageCollection
-var chirpsCollection = ee.ImageCollection("UCSB-CHG/CHIRPS/DAILY");
-
-// Filter the CHIRPS ImageCollection using the landslide date
-var chirpsImage = chirpsCollection.filterDate(landslideDate, landslideDate.advance(1, 'day')).first();
-
-// Calculate the mean precipitation value for the landslide geometry
-var precipitation = chirpsImage.reduceRegion({
-  reducer: ee.Reducer.mean(),
-  geometry: landslideFeatures.geometry(),
-  scale: 5000,
+// Apply the function to the updated polygons for 7 and 14 days
+var outputPredictors_7d = updatedPolygons.map(function (feature) {
+  return addCumulativeRainfall(feature, 7);
 });
 
-// Add the precipitation value as a property to the Feature Collection
-var landslidesWithPrecipitation = landslideFeatures.map(function(feature) {
-  return feature.set('precipitation', precipitation.get('precipitation'));
+var outputPredictors_14d = updatedPolygons.map(function (feature) {
+  return addCumulativeRainfall(feature, 14);
 });
 
-//////////////////////////////////////////////////////////////////////////////////////////
-// Matching dates and creation of stdDev, mean, min, and max:
+// Visualize the results on the map
+Map.addLayer(outputPredictors_7d, { color: 'red' }, 'Predictors with 7-Day Rainfall');
+Map.addLayer(outputPredictors_14d, { color: 'blue' }, 'Predictors with 14-Day Rainfall');
+Map.centerObject(predictors_polygons, 12);
 
-var matching = function (feat){
-  var day = ee.Date(feat.get('date')).getRange('day');
- var precipitation = chirpsCollection.filterDate(day).first();
+// Add landslide points to the map for visualization
+Map.addLayer(landPoints, {color: 'red'}, 'Landslide Points');
 
-  var ReduceValues = precipitation.reduceRegion({
-    reducer: ee.Reducer.mean().combine({
-    reducer2: ee.Reducer.stdDev(),
-    sharedInputs: true
-    }),
-    geometry: feat.geometry(),
-    scale: 30,
-  });
-  
-  var feature = ee.Feature(feat.geometry(), ReduceValues);
-  return feature.set('date', ee.Date(feat.get('date')))
-};
-
-var mappedFeatures = pointsWithDate.map(matching);
-print(mappedFeatures, 'mappedFeatures');
-
-//-------------------------------------------------------------------------------
-
-var matching1 = function (feat){
-  var day = ee.Date(feat.get('date')).getRange('day');
- var precipitation = chirpsCollection.filterDate(day).first();
-
-  var ReduceValues = precipitation.reduceRegion({
-    reducer: ee.Reducer.min().combine({
-    reducer2: ee.Reducer.max(),
-    sharedInputs: true
-    }),
-    geometry: feat.geometry(),
-    scale: 30,
-  });
-  
-  var feature = ee.Feature(feat.geometry(), ReduceValues);
-  var feature2 = feature.set('precipitation_mean', feat.get('precipitation_mean'));
-  var feature3 = feature2.set('precipitation_stdDev', feat.get('precipitation_stdDev'));
-  
-  return feature3.set('date', ee.Date(feat.get('date')));
-};
-
-var mappedFeatures2 = mappedFeatures.map(matching1);
-// print(mappedFeatures2);
-print(mappedFeatures2.limit(50), 'mappedFeatures2');
-
-Map.addLayer(mappedFeatures2, {}, 'mappedFeatures2');
-
-//////////////////////////////////////////////////////////////////////////////////////////
-// Add a new property 'SU_counter' indicating the count of polygons each point intersects with
-var pointsWithSUCounter = mappedFeatures2.map(function(feature) {
-  var polygonsIntersected = ee.FeatureCollection(polygons.filterBounds(feature.geometry()));
-  var suCounter = polygonsIntersected.size();
-  return feature.set('SU_counter', suCounter);
-});
-
-//////////////////////////////////////////////////////////////////////////////////////////
-// Add a new property 'SU_ids' listing the IDs of polygons each point intersects with
-var pointsWithSUIds = pointsWithSUCounter.map(function(feature) {
-  var polygonsIntersected = ee.FeatureCollection(polygons.filterBounds(feature.geometry()));
-  var suIds = polygonsIntersected.aggregate_array('id');
-  return feature.set('SU_ids', suIds);
-});
-
-print(pointsWithSUIds.limit(50), 'pointsWithSUIds');
-
-Map.addLayer(pointsWithSUIds, {}, 'pointsWithSUIds');
-
-//-------------------------------------------------------------------------------
-//-------------------------------------------------------------------------------
-
-// Export the Feature Collection with added properties as a CSV file
-Export.table.toDrive({
-  collection: pointsWithSUIds,
-  folder: 'Mean_Rain',
-  description: 'Points_With_Properties_Precip',
-  fileFormat: 'GeoJSON',
-});
+// Export the results (uncomment to use)
+// Export.table.toDrive({
+//   collection: outputPredictors_7d,
+//   description: 'Filtered_7d_Rainfall',
+//   fileFormat: 'CSV'
+// });
+// Export.table.toDrive({
+//   collection: outputPredictors_14d,
+//   description: 'Filtered_14d_Rainfall',
+//   fileFormat: 'CSV'
+// });
 
