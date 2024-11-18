@@ -51,6 +51,32 @@ This script performs the following key operations:
 - The script visualizes the predictors with 7-day cumulative rainfall in red and 14-day cumulative rainfall in blue.
 - Landslide points are also displayed in red on the map.
 
+# Script outputs:
+
+<table>
+  <thead>
+    <tr>
+      <th colspan="2">
+        <img src="Results_Overview.png" alt="Immagine 1">
+        <p>Results Overview</p>
+      </th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td>
+        <img src="1_ritagliato.png" alt="Immagine 2" style="height: 900px; object-fit: cover;">
+        <p>Not Overlapped Points Results</p>
+      </td>
+      <td>
+        <img src="2-ritagliato.png" alt="Immagine 3" style="height: 900px; object-fit: cover;">
+        <p>Overlapped Points Results</p>
+      </td>
+    </tr>
+  </tbody>
+</table>
+
+
 # Usage
 
 To run this script, ensure you have access to Google Earth Engine and the required datasets. Uncomment the export sections to save the results to your Google Drive.
