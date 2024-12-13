@@ -25,10 +25,10 @@ massimiliano.alvioli[AT]irpi.cnr.it
 */
 
 // Load the FeatureCollection with predictor polygons
-var predictors_polygons = ee.FeatureCollection('projects/stgee-dataset/assets/polygons_gridcoll_14-11-2024');
+var predictors_polygons = ee.FeatureCollection('path/to/predictors_polygons');
 
 // Load the FeatureCollection with landslide points
-var landPoints = ee.FeatureCollection('projects/stgee-dataset/assets/pointsDate');
+var landPoints = ee.FeatureCollection('path/to/landslide_points');
 
 // Function to clean up the index (reset system:index)
 function cleanupIndex(featureCollection) {
@@ -149,4 +149,3 @@ Map.addLayer(landPoints, {color: 'red'}, 'Landslide Points');
 //   description: 'Filtered_14d_Rainfall',
 //   fileFormat: 'CSV'
 // });
-
